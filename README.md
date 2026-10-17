@@ -118,11 +118,12 @@ within a seed. ATLAS uses the budget gate at 35% with row-band tiles (full-width
 rows, which keep Muon's orthogonalized direction far better than a grid), fresh updates and
 backward-sparse passes.
 
-### Same training time, better model (77.9M parameters)
+### Same training time: ATLAS leads early, native Muon wins with longer training
 
-Width 1024, 77.9M parameters. Both optimizers were tuned at this size (both prefer the default
-Muon learning rate) and each runs its own full schedule in the same wall-clock time: native
-Muon for 500 steps, ATLAS for 700. Final validation losses are compared directly.
+Width 1024, 77.9M parameters. Both optimizers were tuned at this size and each runs its own
+full schedule in the same wall-clock time: ATLAS fits about 40% more steps.
+
+**Short runs (500 native steps, three seeds):** ATLAS ends lower in every seed.
 
 | Seed | Native Muon | ATLAS | ATLAS − native |
 | ---: | ---: | ---: | ---: |
@@ -130,17 +131,27 @@ Muon for 500 steps, ATLAS for 700. Final validation losses are compared directly
 | 112 | 2.390 in 46.3 s | 2.366 in 47.1 s | −0.024 |
 | 113 | 2.390 in 46.9 s | 2.357 in 46.9 s | −0.033 |
 
-**ATLAS produces the better model in the same time in every seed** (mean −0.033). In that time
-it takes 40% more steps, each updating about half of the parameters: at this width, Muon's
-orthogonalization takes about half of native's training time, and ATLAS skips most of it.
+The same held at 109M and 146M parameters (nine of nine seeds across three sizes).
 
-What this does and does not show:
+**Four times longer (2000 native steps, one seed): native Muon wins.** ATLAS processes about
+38% more tokens per second and leads for the first ~30% of the run, but native catches up and
+ends clearly ahead (1.790 against 1.946).
 
-- It is one model size, one dataset and short training (2–3M tokens). The margin is modest.
-- The advantage applies when training is limited by **compute**. With a fixed amount of
-  data, ATLAS's extra steps are not available and native Muon's better per-step quality wins.
-- Learning rates must be re-tuned per size. An earlier comparison at this size against a
-  mistuned native baseline looked far more favorable; it was wrong, and we retracted it.
+| Share of training time | 10% | 20% | 30% | 50% | 70% | 100% |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ATLAS − native | −0.156 | −0.102 | 0.000 | +0.116 | +0.145 | +0.162 |
+
+What this shows:
+
+- **ATLAS's advantage is an early-training effect.** Early on, many cheap partial updates beat
+  fewer complete ones; later, progress depends on complete, precise updates and native Muon
+  pulls ahead. The short runs ended inside ATLAS's lead.
+- **The natural use is a hybrid:** ATLAS for the early phase, then full Muon. Whether the
+  crossover sits at a fixed fraction of training or at a fixed amount of progress is the
+  next question.
+- One dataset, one GPU, short runs, mostly single seeds for the long run. An earlier
+  comparison against a mistuned baseline looked far more favorable; it was wrong and
+  retracted. Learning rates must be re-tuned per size and schedule.
 
 ### How the advantage grows with size
 
@@ -156,10 +167,9 @@ points as indicative.
 
 ## Open questions
 
-- **Does the margin grow with width?** Equal-time comparisons at ~110M and ~150M parameters,
-  re-tuning learning rates at each size, are next.
-- **Longer training.** All runs so far are short; the comparison needs to hold over much
-  longer schedules.
+- **Hybrid training:** ATLAS early, then full Muon with its momentum carried over. When should
+  it switch: a fixed fraction of training, a fixed amount of progress, or a measured signal?
+- **Where the crossover falls** across model sizes and training lengths.
 - **The best budget per second.** The budget that loses least per step need not be the one
   that wins most per unit of time.
 - **Matrix-level allocation:** scores seem to matter for dividing work between matrices, not
