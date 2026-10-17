@@ -47,7 +47,7 @@ recent history". It is **not** an estimate of how far a weight is from a correct
 ### Gates
 
 - **Budget gate (current default).** The top *k*% of tiles by score update each step, chosen
-  across all matrices together. This fixes the amount of skipped work by construction.
+  across all matrices together. Tiles are full-width bands of rows. This fixes the amount of skipped work by construction.
 - **Threshold gate (original).** A tile updates when its score reaches a threshold that adapts
   to the mean score. On transformers this stops gating late in training (see below).
 
@@ -98,64 +98,76 @@ every tile a fresh estimate each step. In practice the calibrated estimate came 
   top-*k* even while updating more parameters, and freezing whole matrices for several steps
   at a time was far worse. Irregular selection, whether by score or at random, does not have
   this problem.
+- **Row bands beat grids.** Orthogonalizing full-width row bands instead of grid tiles cut the
+  quality cost of tiled Muon by about three quarters.
 - **Scores seem to matter across matrices, not within them.** At equal update volume, which
   tiles of a matrix update barely matters (top-*k* beat random by 0.004 in one run). But
   letting scores decide how much of the budget each matrix receives beat splitting it
   evenly. Our working hypothesis: scores are for *allocating* work between matrices, and
   placement inside a matrix can be chosen for hardware efficiency.
-- **Tune for sparsity.** Updating tiles less often wants a larger step: doubling the learning
-  rate improved ATLAS three times as much as it improved the dense baseline.
+- **Tune both sides, at every size.** Learning rates that suit one model size can be badly
+  off at another, and an untuned baseline can make any method look good.
 - **Measure, then guess.** Several plausible speedups (a background planner thread, batching
   only the device-to-host transfers) turned out to be minor or negative once profiled.
 
 ## Preliminary results
 
 **Task:** causal language models trained from scratch on TinyStories, six transformer blocks,
-width 288 to 640 (6.6M to 31M parameters), 2M training tokens per run, on one AMD Radeon
-RX 7900 XT. Every configuration shares initialization and minibatches within a seed. ATLAS
-uses the budget gate at 25%, fresh updates and backward-sparse passes; both ATLAS and the
-native Muon baseline use twice the default Muon learning rate.
+on one AMD Radeon RX 7900 XT. Every configuration shares initialization and minibatches
+within a seed. ATLAS uses the budget gate at 35% with row-band tiles (full-width blocks of
+rows, which keep Muon's orthogonalized direction far better than a grid), fresh updates and
+backward-sparse passes.
 
-*Equal-time deficit* compares ATLAS's final validation loss with native Muon's loss after the
-same training time. It is the number that decides whether skipping work pays: positive means
-the baseline is ahead.
+### Same training time, better model (77.9M parameters)
 
-![ATLAS training time and equal-time deficit by model size](scaling.png)
+Width 1024, 77.9M parameters. Both optimizers were tuned at this size (both prefer the default
+Muon learning rate) and each runs its own full schedule in the same wall-clock time: native
+Muon for 500 steps, ATLAS for 700. Final validation losses are compared directly.
 
-| Model size | Seeds | Time vs native Muon | Loss gap | Equal-time deficit |
-| :--- | ---: | ---: | ---: | ---: |
-| 6.6M | 1 | 0.99× | +0.25 | +0.25 |
-| 13.4M | 1 | 0.90× | +0.23 | +0.18 |
-| 25.2M | 1 | 0.86× | +0.28 | +0.19 |
-| 31.0M | 3 | **0.82×** | +0.25 | **+0.13** |
+| Seed | Native Muon | ATLAS | ATLAS − native |
+| ---: | ---: | ---: | ---: |
+| 111 | 2.412 in 46.1 s | 2.370 in 47.6 s | −0.041 |
+| 112 | 2.390 in 46.3 s | 2.366 in 47.1 s | −0.024 |
+| 113 | 2.390 in 46.9 s | 2.357 in 46.9 s | −0.033 |
+
+**ATLAS produces the better model in the same time in every seed** (mean −0.033). In that time
+it takes 40% more steps, each updating about half of the parameters: at this width, Muon's
+orthogonalization takes about half of native's training time, and ATLAS skips most of it.
 
 What this does and does not show:
 
-- **ATLAS gets relatively faster as models grow.** The work it skips grows with matrix size
-  while its bookkeeping stays roughly fixed. At 31M it trains 18% faster than native Muon.
-- **Its equal-time deficit shrinks with size,** from about 0.25 to 0.13, but native Muon is
-  still ahead at every size tested. The improvement comes from speed: the raw quality gap at
-  a fixed number of steps stays around 0.2–0.25.
-- **These are short runs on small models.** Every run uses the same 2M tokens, so larger
-  models are increasingly undertrained. Most points are single seeds. Whether the trend
-  continues, and whether it crosses over, is exactly what the next experiments test.
+- It is one model size, one dataset and short training (2–3M tokens). The margin is modest.
+- The advantage applies when training is limited by **compute**. With a fixed amount of
+  data, ATLAS's extra steps are not available and native Muon's better per-step quality wins.
+- Learning rates must be re-tuned per size. An earlier comparison at this size against a
+  mistuned native baseline looked far more favorable; it was wrong, and we retracted it.
+
+### How the advantage grows with size
+
+![ATLAS training time and equal-time deficit by model size](scaling.png)
+
+From 6.6M to 31M parameters (25% budget, grid tiles), ATLAS gets steadily faster relative to
+native Muon: 0.99× its training time at 6.6M, 0.82× at 31M. Muon's orthogonalization grows
+with width³ while the forward and backward passes grow with tokens × width², so the work
+ATLAS skips becomes a larger share of each step as models widen. At those sizes ATLAS was
+still behind at equal time. Those runs used a learning rate tuned at 6.6M for both
+optimizers, which the 77.9M results show can be off at larger sizes, so treat the smaller
+points as indicative.
 
 ## Open questions
 
-- **The best budget at scale.** At small sizes, a larger budget closed much of the quality gap
-  at some cost in speed. Now that ATLAS is faster than the baseline at 31M, a 35–65% budget
-  may come out ahead at equal time.
-- **Larger models and longer training,** with more seeds, to see whether the scaling trend
-  holds and crosses over.
-- **Matrix-level allocation:** if scores mainly matter for dividing work between matrices,
-  a per-matrix score could replace per-tile scoring, with tiles inside each matrix placed for
-  hardware efficiency.
+- **Does the margin grow with width?** Equal-time comparisons at ~110M and ~150M parameters,
+  re-tuning learning rates at each size, are next.
+- **Longer training.** All runs so far are short; the comparison needs to hold over much
+  longer schedules.
+- **The best budget per second.** The budget that loses least per step need not be the one
+  that wins most per unit of time.
+- **Matrix-level allocation:** scores seem to matter for dividing work between matrices, not
+  for placing it inside one; a per-matrix score could replace per-tile scoring.
 - **Making sparse forward passes work.** Fully sparse training is the fastest mode, but the
-  sparse network drifts from the full one, and switching back to full passes has not yet
-  recovered enough quality.
-- **Fixed-shape steps** (a constant budget per matrix shape) would allow GPU graph capture of
-  the whole update, removing the remaining launch overhead.
-- Adaptive tile sizes, other optimizers and other tasks.
+  sparse network drifts from the full one.
+- **Fixed-shape steps** would allow GPU graph capture of the whole update.
+- Other optimizers, tasks and hardware.
 
 ## Credits and license
 
